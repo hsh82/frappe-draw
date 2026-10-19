@@ -185,7 +185,7 @@ export function flowchartNodeSize({
 	// separate words on the main thread.
 	const useFontMetrics = content.length < 5000 && textWidth("M", style) > 0;
 	const longestWordWidth = useFontMetrics
-		? textWidth(longestWord, style)
+		? widestWordWidth(words, style)
 		: Math.max(1, longestWord.length) * charWidth;
 
 	// Does the label fit a box `growth` times the type's default, at its proportions?
@@ -223,6 +223,14 @@ export function flowchartNodeSize({
 		return { w: side, h: side };
 	}
 	return { w: Math.ceil(w), h: Math.ceil(h) };
+}
+
+function widestWordWidth(words, style) {
+	let widest = 0;
+	for (const word of new Set(words)) {
+		widest = Math.max(widest, textWidth(word, style));
+	}
+	return widest;
 }
 
 // The smallest uniform scale (never below 1 — a node is at least its type's

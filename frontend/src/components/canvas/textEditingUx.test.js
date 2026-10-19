@@ -95,8 +95,8 @@ describe("committed plain node labels resolve shape direction", () => {
 	const richLists = read("diagram/richTextLists.js");
 
 	it("sets the same resolved direction on the plain node label wrapper", () => {
-		expect(shapeView).toContain(
-			'<div class="fd-richtext" :dir="plainDirection" :style="{ ...richStyle, color: labelFill }">'
+		expect(shapeView).toMatch(
+			/<div\b(?=[^>]*class="fd-richtext")(?=[^>]*:dir="plainDirection")(?=[^>]*:style="\{ \.\.\.richStyle, color: labelFill \}")[^>]*>/
 		);
 	});
 

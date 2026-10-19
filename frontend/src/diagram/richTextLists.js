@@ -147,9 +147,9 @@ function readList(list, lines, depth, defaultDirection) {
 		const marker = listMarkerForType(ordered, number);
 		let emittedParagraph = false;
 		let inlineText = "";
-		const emitParagraph = (text, element = null) => {
+		const emitParagraph = (text, element = null, preserveEmpty = false) => {
 			const value = String(text || "").trim();
-			if (!value) return;
+			if (!value && !preserveEmpty) return;
 			const mode = paragraphMode(element, item, defaultDirection);
 			const direction = resolveDirection(mode || "auto", value);
 			const align = alignmentOf(element);
@@ -164,13 +164,13 @@ function readList(list, lines, depth, defaultDirection) {
 			});
 			emittedParagraph = true;
 		};
-		const flushInline = () => {
-			emitParagraph(inlineText);
+		const flushInline = (preserveEmpty = false) => {
+			emitParagraph(inlineText, null, preserveEmpty);
 			inlineText = "";
 		};
 		for (const child of item.childNodes) {
 			if (child.nodeType === 1 && (child.tagName === "UL" || child.tagName === "OL")) {
-				flushInline();
+				flushInline(!emittedParagraph);
 				readList(child, lines, depth + 1, defaultDirection);
 			} else if (child.nodeType === 1 && BLOCK_TAGS.has(child.tagName)) {
 				flushInline();
@@ -182,6 +182,7 @@ function readList(list, lines, depth, defaultDirection) {
 			}
 		}
 		flushInline();
+		if (!emittedParagraph) emitParagraph("", null, true);
 		if (ordered) number += 1;
 	}
 }
@@ -246,9 +247,10 @@ function safeStart(value) {
 function layoutLine(line) {
 	// Non-whitespace keeps the heuristic node wrappers from dropping nested indent.
 	const indent = "·····".repeat(line.depth || 0);
-	const marker = line.continuation
-		? ""
-		: listMarkerForType(line.listType === "ordered", line.number);
+	const marker =
+		line.continuation || !line.listType
+			? ""
+			: listMarkerForType(line.listType === "ordered", line.number);
 	return `${indent}${marker}${line.text}`;
 }
 
@@ -256,6 +258,7 @@ function markdownLine(line) {
 	const depth = Math.max(0, line.depth || 0);
 	const indent = "  ".repeat(depth);
 	const text = escapeMarkdown(line.text);
+	if (!line.listType) return `${indent}${text}`;
 	if (line.continuation) return `${indent}${text}`;
 	if (line.listType === "ordered") return `${indent}${line.number}. ${text}`;
 	return `${indent}- ${text}`;

@@ -8,13 +8,21 @@ import {
 	richTextLines,
 } from "./richTextLists.js";
 import { mindmapNodeSize, mindmapSizeForShape } from "./mindmapNodeSize.js";
-import { flowchartNodeSize, flowchartSizeForShape } from "./flowchartNodeSize.js";
+import {
+	flowchartNodeSize,
+	flowchartSizeForShape,
+	flowchartTextArea,
+} from "./flowchartNodeSize.js";
+import { textWidth } from "./textMetrics.js";
 
 const originalCanvasGetContext = HTMLCanvasElement.prototype.getContext;
+let wideWordMetrics = false;
 const canvasContext = {
 	font: "",
 	measureText(text) {
 		const size = Number(this.font.match(/([\d.]+)px/)?.[1]) || 16;
+		if (wideWordMetrics && /^W+$/.test(text)) return { width: text.length * size * 2 };
+		if (wideWordMetrics && /^i+$/.test(text)) return { width: text.length * size * 0.1 };
 		return { width: Array.from(text).length * size * 0.61 };
 	},
 };
@@ -53,6 +61,14 @@ describe("richTextLines", () => {
 		]);
 	});
 
+	it("measures plain text without adding an invisible bullet", () => {
+		const text = "A plain canvas label";
+		const lines = richTextLines("", text);
+
+		expect(richTextLayoutText(lines)).toBe(text);
+		expect(richTextLayoutWidth(lines, { size: 16 })).toBe(textWidth(text, { size: 16 }));
+	});
+
 	it("uses only sanitized text when the stored HTML contains unsafe markup", () => {
 		const lines = richTextLines("<script>attack()</script><ul><li>Safe</li></ul>");
 
@@ -65,6 +81,28 @@ describe("richTextLines", () => {
 		);
 
 		expect(richTextLayoutText(lines)).toBe("• Top\n• Parent\n·····1. Child");
+	});
+
+	it("preserves empty ordered and bulleted rows, numbering, and nested items", () => {
+		const lines = richTextLines(
+			'<ol start="4"><li><p></p></li><li><p></p><ul><li></li></ul></li><li><p>Filled</p></li></ol>'
+		);
+
+		expect(
+			lines.map(({ listType, number, text, continuation, depth }) => ({
+				listType,
+				number,
+				text,
+				continuation: Boolean(continuation),
+				depth,
+			}))
+		).toEqual([
+			{ listType: "ordered", number: 4, text: "", continuation: false, depth: 0 },
+			{ listType: "ordered", number: 5, text: "", continuation: false, depth: 0 },
+			{ listType: "bullet", number: null, text: "", continuation: false, depth: 1 },
+			{ listType: "ordered", number: 6, text: "Filled", continuation: false, depth: 0 },
+		]);
+		expect(richTextLayoutText(lines)).toBe("4. \n5. \n·····• \n6. Filled");
 	});
 
 	it("includes list markers and nested indentation in node sizing input", () => {
@@ -151,6 +189,28 @@ describe("richTextLines", () => {
 		expect(width).toBeGreaterThan("·····1. Nested".length * 10 * 0.61);
 		expect(canvasContext.font).toContain("'Vazirmatn', sans-serif");
 		expect(canvasContext.font).toContain("700");
+	});
+
+	it("sizes to the visually widest word rather than the longest word", () => {
+		wideWordMetrics = true;
+		const style = { size: 12, font: "'Vazirmatn', sans-serif" };
+		try {
+			const lines = richTextLines("", "WWWW iiiiiiiii");
+			const shape = flowchartNodeSize({
+				nodeType: "process",
+				text: richTextLayoutText(lines),
+				fontSize: style.size,
+				font: style.font,
+			});
+
+			expect(textWidth("WWWW", style)).toBeGreaterThan(textWidth("iiiiiiiii", style));
+			expect(
+				flowchartTextArea({ x: 0, y: 0, ...shape, flowchart: { nodeType: "process" } }).w
+			).toBeGreaterThanOrEqual(textWidth("WWWW", style));
+			expect(canvasContext.font).toContain("'Vazirmatn', sans-serif");
+		} finally {
+			wideWordMetrics = false;
+		}
 	});
 });
 
