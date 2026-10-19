@@ -21,7 +21,7 @@ import {
 	fitsWidthToText,
 	LINE_HEIGHT,
 } from "@/composables/useTextEditing.js";
-import { textWidth, lineCount } from "@/diagram/textMetrics.js";
+import { lineCount } from "@/diagram/textMetrics.js";
 import {
 	RICH_EXTENSIONS,
 	richCommands,
@@ -33,8 +33,15 @@ import {
 import { sanitizeRichText } from "@/utils/sanitizeHtml.js";
 import { mindmapNodeSize } from "@/diagram/mindmapNodeSize.js";
 import { flowchartNodeSize } from "@/diagram/flowchartNodeSize.js";
-import { richTextLines, richTextLayoutText } from "@/diagram/richTextLists.js";
-import { hasOpenTextFormattingSurface } from "@/composables/useTextFormatting.js";
+import {
+	richTextLines,
+	richTextLayoutText,
+	richTextLayoutWidth,
+} from "@/diagram/richTextLists.js";
+import {
+	hasOpenTextFormattingSurface,
+	isTextEditingSurfaceTarget,
+} from "@/composables/useTextFormatting.js";
 
 const store = useDiagramStore();
 const editorUi = useEditorUi();
@@ -225,10 +232,11 @@ function autoGrow() {
 // hundreds. `chrome` is the inset between the shape and its text area, added back
 // so the text gets the width it measured.
 function fitBoxToText() {
-	const text = richTextLayoutText(richTextLines(editor.value.getHTML(), editor.value.getText()));
+	const lines = richTextLines(editor.value.getHTML(), editor.value.getText());
+	const text = richTextLayoutText(lines);
 	const style = shape.value.text?.style || {};
 	const chrome = shape.value.w - shapeTextArea(shape.value).w;
-	const width = Math.ceil(textWidth(text, style)) + TEXT_FIT_PADDING + chrome;
+	const width = Math.ceil(richTextLayoutWidth(lines, style)) + TEXT_FIT_PADDING + chrome;
 	const height = Math.ceil(lineCount(text) * (style.size || 16) * LINE_HEIGHT) + 8;
 	if (width === shape.value.w && height === shape.value.h) return;
 	store.updateShape(shape.value.id, { w: width, h: height });
@@ -239,9 +247,13 @@ function fitBoxToText() {
 // leak out (#427 item 5). Measured, not read back from the DOM, so the box the
 // user is typing into is exactly the box the layout will space the tree against.
 function growMindmapNode() {
+	const style = shape.value.text?.style || {};
 	const size = mindmapNodeSize({
 		text: richTextLayoutText(richTextLines(editor.value.getHTML(), editor.value.getText())),
-		fontSize: shape.value.text?.style?.size,
+		fontSize: style.size,
+		font: style.font,
+		bold: style.bold,
+		italic: style.italic,
 		isRoot: !shape.value.mindmap?.parentId,
 	});
 	if (size.w === shape.value.w && size.h === shape.value.h) return;
@@ -257,10 +269,14 @@ function growMindmapNode() {
 // against. Measured, not read back from the DOM, so the box being typed into is
 // the box the renderer will inset.
 function growFlowchartNode() {
+	const style = shape.value.text?.style || {};
 	const size = flowchartNodeSize({
 		nodeType: shape.value.flowchart?.nodeType,
 		text: richTextLayoutText(richTextLines(editor.value.getHTML(), editor.value.getText())),
-		fontSize: shape.value.text?.style?.size,
+		fontSize: style.size,
+		font: style.font,
+		bold: style.bold,
+		italic: style.italic,
 	});
 	if (size.w === shape.value.w && size.h === shape.value.h) return;
 	store.resizeFlowchartNodeToText(shape.value.id, size);
@@ -283,14 +299,13 @@ function commit() {
 }
 
 function isTextFormattingFocus(target) {
-	return target instanceof Element && Boolean(target.closest("[data-text-formatting-surface]"));
+	return isTextEditingSurfaceTarget(target);
 }
 
 function handleFormattingFocusChange(event) {
-	if (!editing.isEditing.value || !hasOpenTextFormattingSurface(editing.session.id)) return;
+	if (!editing.isEditing.value) return;
 	const target = event.target;
-	if (isTextFormattingFocus(target)) return;
-	if (target instanceof Element && target.closest('[contenteditable="true"]')) return;
+	if (isTextEditingSurfaceTarget(target)) return;
 	commit();
 }
 
@@ -410,8 +425,7 @@ function onKeydown(event) {
 	list-style-position: outside;
 }
 .fd-richtext li {
-	/* Symmetric gutters keep mixed-direction siblings clear of either marker side. */
-	margin-inline: 1.4em;
+	margin-inline: 0;
 }
 .fd-richtext ul {
 	list-style-type: disc;

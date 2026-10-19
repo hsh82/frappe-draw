@@ -500,7 +500,11 @@ useAutoFitText(richEl, () => ({
 			:height="textArea.h"
 			style="overflow: visible"
 		>
-			<div class="fd-richtext" :style="{ ...richStyle, color: labelFill }">
+			<div
+				class="fd-richtext"
+				:dir="plainDirection"
+				:style="{ ...richStyle, color: labelFill }"
+			>
 				{{ mindmapPlaceholder ? "New idea" : shape.text.content }}
 			</div>
 		</foreignObject>
