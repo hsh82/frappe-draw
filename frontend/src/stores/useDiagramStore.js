@@ -92,6 +92,8 @@ import {
 	rowHeightsOf,
 } from "@/diagram/whiteboardModel.js";
 import { useWhiteboardUi } from "@/composables/useWhiteboardUi.js";
+import { clearRichTextBlockDirections } from "@/diagram/richTextLists.js";
+import { validDirectionMode } from "@/diagram/textDirection.js";
 
 const STORE_KEY = "diagramStore";
 
@@ -1274,6 +1276,32 @@ function attachShapeMutations(store, state, history) {
 				store.fitFlowchartNodes?.(ids);
 			}
 		});
+	store.setTextDirection = (ids, direction) => {
+		const mode = validDirectionMode(direction);
+		if (!mode) return;
+		const patches = ids
+			.map((id) => store.shapeById(id))
+			.filter((shape) => shape && shape.type !== "image")
+			.map((shape) => ({
+				shape,
+				text: {
+					...(mode === "auto" ? {} : { direction: mode }),
+					...(shape.text?.html
+						? { html: clearRichTextBlockDirections(shape.text.html) }
+						: {}),
+				},
+			}));
+		if (!patches.length) return;
+		history.commit("Text direction", () => {
+			for (const { shape, text } of patches) {
+				applyPatch(shape, { text });
+				if (mode === "auto" && shape.text) delete shape.text.direction;
+			}
+			const changed = patches.map(({ shape }) => shape.id);
+			store.fitMindmapNodes?.(changed);
+			store.fitFlowchartNodes?.(changed);
+		});
+	};
 	store.removeShapes = (ids) =>
 		history.commit("Delete shapes", () => store.removeShapesAndSettle(ids));
 	store.removeConnectors = (ids) =>

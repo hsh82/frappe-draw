@@ -12,6 +12,10 @@ const { ROUNDED_CORNER_RADIUS, SHARP_CORNER_RADIUS } = await import("@/diagram/s
 const { HIGHLIGHTER_OPACITY } = await import("@/diagram/whiteboardColors.js");
 const { presetPolygonPoints } = await import("@/diagram/polygon.js");
 
+function svgTextContent(svg) {
+	return new DOMParser().parseFromString(svg, "image/svg+xml").documentElement.textContent;
+}
+
 // documentToSvg is the SINGLE render-to-SVG path: PNG/PDF export (useExport), the
 // saved thumbnail, and the home + trash tile previews all go through it. So anything
 // it omits is missing from every one of those at once.
@@ -192,8 +196,8 @@ describe("documentToSvg for a unified document", () => {
 
 		const svg = documentToSvg(doc);
 
-		expect(svg).toContain("1. First &amp; bold");
-		expect(svg).toContain("2. Second &lt; task");
+		expect(svgTextContent(svg)).toContain("1. First & bold");
+		expect(svgTextContent(svg)).toContain("2. Second < task");
 		expect(svg).not.toContain("<ol>");
 		expect(svg).not.toContain("<strong>");
 	});
@@ -208,13 +212,63 @@ describe("documentToSvg for a unified document", () => {
 		};
 
 		const svg = documentToSvg(doc);
-		const listText = svg.match(
-			/<text dominant-baseline="central" text-anchor="start"[\s\S]*?<\/text>/
-		)?.[0];
+		const textNodes = [
+			...new DOMParser().parseFromString(svg, "image/svg+xml").querySelectorAll("text"),
+		];
+		const listText = textNodes.filter((node) => /^x+$/.test(node.textContent));
 
-		expect(listText).toBeDefined();
-		expect(listText.match(/<tspan/g).length).toBeGreaterThan(1);
-		expect(listText.match(/• /g)).toHaveLength(1);
+		expect(listText.length).toBeGreaterThan(1);
+		expect(listText.map((node) => node.textContent).join("")).toBe(text);
+		expect(textNodes.filter((node) => node.textContent === "• ")).toHaveLength(1);
+	});
+
+	it("exports paragraph and list direction without reversing stored text", () => {
+		const doc = unifiedDocument();
+		doc.shapes[0].w = 500;
+		doc.shapes[0].text = {
+			content: "فارسی Frappe 3\nEnglish متن فارسی",
+			html:
+				'<p dir="rtl">فارسی Frappe 3</p>' +
+				'<ol><li dir="rtl"><p dir="rtl">مرحبا (2026)</p></li></ol>' +
+				'<p dir="ltr">English متن فارسی</p>',
+			style: {},
+		};
+		const svg = documentToSvg(doc);
+		expect(svg).toContain('direction="rtl"');
+		expect(svg).toContain('direction="ltr"');
+		const exportedText = svgTextContent(svg);
+		expect(exportedText).toContain("فارسی Frappe 3");
+		expect(exportedText).toContain("1. مرحبا (2026)");
+		expect(exportedText).toContain("English متن فارسی");
+	});
+
+	it.each(["ltr", "rtl"])("centers %s list markers with their text", (direction) => {
+		const doc = unifiedDocument();
+		doc.shapes[0].text = {
+			content: "Centered",
+			html: `<ul><li><p dir="${direction}" style="text-align: center">Centered</p></li></ul>`,
+			style: {},
+		};
+		const svg = documentToSvg(doc);
+		const text = new DOMParser()
+			.parseFromString(svg, "image/svg+xml")
+			.querySelector('text[text-anchor="middle"]');
+
+		expect(text?.getAttribute("x")).toBe("200");
+		expect(text?.getAttribute("direction")).toBe(direction);
+		expect(text?.textContent).toBe("• Centered");
+	});
+
+	it("keeps explicit paragraph alignment separate from direction in SVG", () => {
+		const doc = unifiedDocument();
+		doc.shapes[0].text = {
+			content: "مرحبا",
+			html: '<p dir="rtl" style="text-align: left">مرحبا</p>',
+			align: "right",
+			style: {},
+		};
+		const svg = documentToSvg(doc);
+		expect(svg).toMatch(/<text x="108"[^>]*direction="rtl"[^>]*text-anchor="end"/);
 	});
 
 	it("includes whiteboard ink and sticky notes", () => {
@@ -250,8 +304,8 @@ describe("documentToSvg for a unified document", () => {
 
 	it("includes the mind-map frame", () => {
 		const svg = documentToSvg(unifiedDocument());
-		expect(svg).toContain("MINDMAP-ROOT");
-		expect(svg).toContain("MINDMAP-CHILD");
+		expect(svgTextContent(svg)).toContain("MINDMAP-ROOT");
+		expect(svgTextContent(svg)).toContain("MINDMAP-CHILD");
 	});
 
 	it("includes the flowchart frame", () => {
@@ -680,7 +734,7 @@ describe("no persisted value can escape its SVG attribute", () => {
 		expect(svg).toContain("#EFF6FF"); // block fill
 		expect(svg).toContain("#123456"); // stroke colour
 		expect(svg).toContain("#FEF3C7"); // sticky colour
-		expect(svg).toContain("MINDMAP-CHILD");
+		expect(svgTextContent(svg)).toContain("MINDMAP-CHILD");
 		expect(svg).toContain("FLOW-STEP");
 	});
 });

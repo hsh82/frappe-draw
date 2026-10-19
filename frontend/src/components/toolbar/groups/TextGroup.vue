@@ -7,14 +7,19 @@
 // IS the text-only menu while editing (#259), and part of the shape menu
 // otherwise — which is why every control drives the live rich-text editor when
 // one is open and the shape-level base style when it is not.
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { Popover, Select, TextInput } from "frappe-ui";
 import { useBlockSelection } from "@/composables/useBlockSelection.js";
-import { richCommands, isMarkActive } from "@/composables/useRichText.js";
+import { richCommands, isMarkActive, activeEditorOwner } from "@/composables/useRichText.js";
+import {
+	openTextFormattingSurface,
+	closeTextFormattingSurface,
+} from "@/composables/useTextFormatting.js";
 import { useTextEditing } from "@/composables/useTextEditing.js";
 import { richTextLines } from "@/diagram/richTextLists.js";
 import EspressoSwatchGrid from "@/components/palette-right/EspressoSwatchGrid.vue";
 import ToolbarButton from "../ToolbarButton.vue";
+import ParagraphDirectionMenu from "./ParagraphDirectionMenu.vue";
 import { ESPRESSO_SANS, FONTS } from "@/diagram/textFonts.js";
 
 // textShapes, not every selected shape (#519): a mixed selection of an image and a
@@ -123,6 +128,23 @@ const currentAlignment = computed(
 	() => ALIGNMENTS.find((alignment) => alignActive(alignment.value)) || ALIGNMENTS[1]
 );
 
+const formattingSession = new Map();
+function formattingOpened(surfaceId) {
+	const sessionId = activeEditorOwner.value?.sessionId;
+	if (sessionId == null) return;
+	formattingSession.set(surfaceId, sessionId);
+	openTextFormattingSurface(sessionId, surfaceId);
+}
+function formattingClosed(surfaceId) {
+	const sessionId = formattingSession.get(surfaceId);
+	if (sessionId == null) return;
+	closeTextFormattingSurface(sessionId, surfaceId);
+	formattingSession.delete(surfaceId);
+}
+onBeforeUnmount(() => {
+	for (const surfaceId of formattingSession.keys()) formattingClosed(surfaceId);
+});
+
 function stepFontSize(delta) {
 	updateTextStyle({ size: Math.max(6, Math.min(200, Number(fontSize.value) + delta)) });
 }
@@ -167,114 +189,138 @@ function setTextColor(hex) {
 </script>
 
 <template>
-	<Select
-		:model-value="font"
-		:options="FONTS"
-		class="h-7 w-[92px]"
-		@update:model-value="setFont"
-		@mousedown.stop
-	/>
+	<div class="flex items-center gap-1" data-text-formatting-surface>
+		<Select
+			:model-value="font"
+			:options="FONTS"
+			class="h-7 w-[92px]"
+			@update:model-value="setFont"
+			@mousedown.stop
+		/>
 
-	<div class="flex items-center rounded-md border border-outline-gray-2">
+		<div class="flex items-center rounded-md border border-outline-gray-2">
+			<ToolbarButton
+				class="!w-6"
+				label="Decrease font size"
+				icon="lucide-minus"
+				@click="stepFontSize(-1)"
+			/>
+			<TextInput
+				v-model="fontSizeDraft"
+				type="text"
+				size="sm"
+				variant="ghost"
+				inputmode="numeric"
+				aria-label="Font size"
+				class="w-9 [&_input]:px-0 [&_input]:text-center [&_input]:tabular-nums"
+				@focus="$event.target.select()"
+				@keydown.enter="
+					commitFontSizeDraft();
+					$event.target.blur();
+				"
+				@blur="resetFontSizeDraft"
+			/>
+			<ToolbarButton
+				class="!w-6"
+				label="Increase font size"
+				icon="lucide-plus"
+				@click="stepFontSize(1)"
+			/>
+		</div>
+
 		<ToolbarButton
-			class="!w-6"
-			label="Decrease font size"
-			icon="lucide-minus"
-			@click="stepFontSize(-1)"
+			v-for="mark in MARKS.slice(0, 2)"
+			:key="mark.name"
+			:label="mark.label"
+			:icon="mark.icon"
+			:active="markActive(mark.name)"
+			@click="markText(mark.name)"
 		/>
-		<TextInput
-			v-model="fontSizeDraft"
-			type="text"
-			size="sm"
-			variant="ghost"
-			inputmode="numeric"
-			aria-label="Font size"
-			class="w-9 [&_input]:px-0 [&_input]:text-center [&_input]:tabular-nums"
-			@focus="$event.target.select()"
-			@keydown.enter="
-				commitFontSizeDraft();
-				$event.target.blur();
-			"
-			@blur="resetFontSizeDraft"
+		<Popover @open="formattingOpened('decoration')" @close="formattingClosed('decoration')">
+			<template #trigger>
+				<ToolbarButton label="Text decoration" icon="lucide-underline" />
+			</template>
+			<template #default>
+				<div class="p-1" data-text-formatting-surface @mousedown.prevent>
+					<div role="group" aria-label="Text decoration" class="flex gap-1">
+						<ToolbarButton
+							v-for="mark in MARKS.slice(2)"
+							:key="mark.name"
+							:label="mark.label"
+							:icon="mark.icon"
+							:active="markActive(mark.name)"
+							@click="markText(mark.name)"
+						/>
+					</div>
+				</div>
+			</template>
+		</Popover>
+
+		<ToolbarButton
+			label="Bulleted list"
+			icon="lucide-list"
+			:active="listActive('bulletList')"
+			:disabled="!editing && !canFormatSelectedShapeAsList"
+			@click="toggleList('bulletList')"
 		/>
 		<ToolbarButton
-			class="!w-6"
-			label="Increase font size"
-			icon="lucide-plus"
-			@click="stepFontSize(1)"
+			label="Numbered list"
+			icon="lucide-list-ordered"
+			:active="listActive('orderedList')"
+			:disabled="!editing && !canFormatSelectedShapeAsList"
+			@click="toggleList('orderedList')"
 		/>
-	</div>
 
-	<ToolbarButton
-		v-for="mark in MARKS"
-		:key="mark.name"
-		:label="mark.label"
-		:icon="mark.icon"
-		:active="markActive(mark.name)"
-		@click="markText(mark.name)"
-	/>
-
-	<ToolbarButton
-		label="Bulleted list"
-		icon="lucide-list"
-		:active="listActive('bulletList')"
-		:disabled="!editing && !canFormatSelectedShapeAsList"
-		@click="toggleList('bulletList')"
-	/>
-	<ToolbarButton
-		label="Numbered list"
-		icon="lucide-list-ordered"
-		:active="listActive('orderedList')"
-		:disabled="!editing && !canFormatSelectedShapeAsList"
-		@click="toggleList('orderedList')"
-	/>
-
-	<!-- One entry, opening the three. Left / centre / right as three buttons cost
+		<!-- One entry, opening the three. Left / centre / right as three buttons cost
        96px of a bar that overflowed a 1280px screen by 155px, and the trigger
        still shows which alignment is set, so the state stays readable without
        opening it. -->
-	<Popover>
-		<template #trigger>
-			<ToolbarButton :label="currentAlignment.label" :icon="currentAlignment.icon" />
-		</template>
-		<template #default="{ toggle }">
-			<div class="flex gap-1 p-1">
-				<ToolbarButton
-					v-for="alignment in ALIGNMENTS"
-					:key="alignment.value"
-					:label="alignment.label"
-					:icon="alignment.icon"
-					:active="alignActive(alignment.value)"
-					@click="
-						setTextAlign(alignment.value);
-						toggle();
-					"
-				/>
-			</div>
-		</template>
-	</Popover>
+		<Popover @open="formattingOpened('alignment')" @close="formattingClosed('alignment')">
+			<template #trigger>
+				<ToolbarButton :label="currentAlignment.label" :icon="currentAlignment.icon" />
+			</template>
+			<template #default="{ toggle }">
+				<div class="p-1" data-text-formatting-surface @mousedown.prevent>
+					<div role="group" aria-label="Alignment" class="flex gap-1">
+						<ToolbarButton
+							v-for="alignment in ALIGNMENTS"
+							:key="alignment.value"
+							:label="alignment.label"
+							:icon="alignment.icon"
+							:active="alignActive(alignment.value)"
+							@click="
+								setTextAlign(alignment.value);
+								toggle();
+							"
+						/>
+					</div>
+				</div>
+			</template>
+		</Popover>
+		<ParagraphDirectionMenu />
 
-	<Popover>
-		<template #trigger>
-			<ToolbarButton label="Text colour">
-				<template #icon>
-					<span
-						class="grid size-4 place-items-center rounded text-sm font-semibold"
-						:style="{ color: currentTextColor }"
-						>A</span
-					>
-				</template>
-			</ToolbarButton>
-		</template>
-		<template #default>
-			<div class="p-1">
-				<EspressoSwatchGrid
-					mode="fill"
-					:allow-none="false"
-					:model-value="currentTextColor"
-					@select="setTextColor"
-				/>
-			</div>
-		</template>
-	</Popover>
+		<Popover @open="formattingOpened('text-colour')" @close="formattingClosed('text-colour')">
+			<template #trigger>
+				<ToolbarButton label="Text colour">
+					<template #icon>
+						<span
+							class="grid size-4 place-items-center rounded text-sm font-semibold"
+							:style="{ color: currentTextColor }"
+							>A</span
+						>
+					</template>
+				</ToolbarButton>
+			</template>
+			<template #default>
+				<div class="p-1" data-text-formatting-surface>
+					<EspressoSwatchGrid
+						mode="fill"
+						:allow-none="false"
+						:model-value="currentTextColor"
+						@select="setTextColor"
+					/>
+				</div>
+			</template>
+		</Popover>
+	</div>
 </template>

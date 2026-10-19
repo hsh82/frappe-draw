@@ -3,8 +3,8 @@
 // borrowed from frappe/slides; the implementation here is our own and minimal.
 //
 // StarterKit (TipTap v3) already bundles bold / italic / underline / bullet &
-// ordered lists, so we only add TextStyle + Color (per-run color) and TextAlign
-// (per-paragraph alignment). A module-level `activeEditor` ref points at the
+// ordered lists, so we add TextStyle + Color (per-run color), TextAlign, and
+// paragraph direction. A module-level `activeEditor` ref points at the
 // editor currently being edited, so the palette can run commands on it.
 
 import { computed, ref, shallowRef } from "vue";
@@ -12,16 +12,19 @@ import StarterKit from "@tiptap/starter-kit";
 import { TextStyle } from "@tiptap/extension-text-style";
 import Color from "@tiptap/extension-color";
 import TextAlign from "@tiptap/extension-text-align";
+import { ParagraphDirection, paragraphDirectionState } from "./paragraphDirection.js";
 
 export const RICH_EXTENSIONS = [
 	StarterKit,
 	TextStyle,
 	Color,
 	TextAlign.configure({ types: ["paragraph", "heading"] }),
+	ParagraphDirection,
 ];
 
 // The TipTap editor for the shape/connector currently being edited (or null).
 export const activeEditor = shallowRef(null);
+export const activeEditorOwner = shallowRef(null);
 const activeEditorRevision = ref(0);
 const activeEditorState = computed(() => ({
 	editor: activeEditor.value,
@@ -30,10 +33,14 @@ const activeEditorState = computed(() => ({
 
 let activeEditorTransactionHandler = null;
 
-export function setActiveEditor(editor) {
-	if (activeEditor.value === editor) return;
+export function setActiveEditor(editor, owner = null) {
+	if (activeEditor.value === editor) {
+		activeEditorOwner.value = owner;
+		return;
+	}
 	removeActiveEditorListener();
 	activeEditor.value = editor;
+	activeEditorOwner.value = owner;
 	if (!editor) return;
 	activeEditorTransactionHandler = () => {
 		activeEditorRevision.value += 1;
@@ -44,6 +51,7 @@ export function clearActiveEditor(editor) {
 	if (activeEditor.value !== editor) return;
 	removeActiveEditorListener();
 	activeEditor.value = null;
+	activeEditorOwner.value = null;
 }
 
 export function selectRichTextDocument(editor) {
@@ -105,7 +113,7 @@ function escapeHtml(value) {
 // no-op when nothing is being edited.
 function run(fn, shouldFocus = true) {
 	const editor = activeEditor.value;
-	if (!editor) return false;
+	if (!editor || editor.isDestroyed) return false;
 	const chain = editor.chain();
 	return fn(shouldFocus ? chain.focus() : chain).run();
 }
@@ -122,8 +130,52 @@ export const richCommands = {
 		return false;
 	},
 	setAlign: (align) => run((c) => c.setTextAlign(align)),
+	setDirection: (direction) => run((c) => c.setParagraphDirection(direction)),
 	setColor: (color) => run((c) => c.setColor(color)),
 };
+
+export function currentParagraphDirection() {
+	const editor = activeEditorState.value.editor;
+	return editor && !editor.isDestroyed
+		? paragraphDirectionState(editor.state, editor.storage.paragraphDirection.defaultDirection)
+		: null;
+}
+
+export function currentParagraphDirectionMode() {
+	const editor = activeEditorState.value.editor;
+	if (!editor || editor.isDestroyed) return null;
+	const selection = editor.state.selection;
+	const blocks = [];
+	if (selection.empty) {
+		for (let depth = selection.$from.depth; depth > 0; depth -= 1) {
+			const node = selection.$from.node(depth);
+			if (["paragraph", "heading", "codeBlock"].includes(node.type.name)) {
+				blocks.push(node);
+				break;
+			}
+		}
+	} else {
+		editor.state.doc.nodesBetween(selection.from, selection.to, (node, position) => {
+			const contentFrom = position + 1;
+			const contentTo = position + node.nodeSize - 1;
+			if (
+				["paragraph", "heading", "codeBlock"].includes(node.type.name) &&
+				selection.to > contentFrom &&
+				selection.from < contentTo
+			) {
+				blocks.push(node);
+			}
+		});
+	}
+	if (!blocks.length) return null;
+	const modes = new Set(
+		blocks.map((node) => {
+			const mode = node.attrs.dir;
+			return mode === "ltr" || mode === "rtl" || mode === "auto" ? mode : null;
+		})
+	);
+	return modes.size === 1 ? [...modes][0] : "mixed";
+}
 
 export function isMarkActive(name, attrs) {
 	const editor = activeEditorState.value.editor;

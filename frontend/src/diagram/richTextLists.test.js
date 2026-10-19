@@ -12,9 +12,16 @@ describe("richTextLines", () => {
 		);
 
 		expect(lines).toEqual([
-			{ text: "First", listType: "ordered", depth: 0, number: 3 },
-			{ text: "Nested", listType: "bullet", depth: 1, number: null },
-			{ text: "Second", listType: "ordered", depth: 0, number: 4 },
+			{ text: "First", listType: "ordered", depth: 0, number: 3, mode: "auto", dir: "ltr" },
+			{
+				text: "Nested",
+				listType: "bullet",
+				depth: 1,
+				number: null,
+				mode: "auto",
+				dir: "ltr",
+			},
+			{ text: "Second", listType: "ordered", depth: 0, number: 4, mode: "auto", dir: "ltr" },
 		]);
 	});
 
@@ -40,7 +47,7 @@ describe("richTextLines", () => {
 	});
 
 	it("includes list markers and nested indentation in node sizing input", () => {
-		const text = "x".repeat(50);
+		const text = "x".repeat(20);
 		const lines = richTextLines(`<ul><li>${text}<ol><li>${text}</li></ol></li></ul>`);
 		const measuredText = richTextLayoutText(lines);
 		const plainText = `${text}\n${text}`;

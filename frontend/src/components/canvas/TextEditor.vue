@@ -2,14 +2,14 @@
 // Inline rich-text editor overlay (spec §6). A TipTap editor lives in a
 // <foreignObject> aligned to the editing shape's text area at any zoom (it sits
 // inside the viewport-transformed <g>, so logical units suffice). Gives multi-
-// line text, bullet/ordered lists, bold/italic/underline and per-paragraph
-// alignment. Commits store BOTH the HTML (rich render) and plain text (export
+// line text, bullet/ordered lists, bold/italic/underline, per-paragraph
+// alignment and direction. Commits store BOTH the HTML (rich render) and plain text (export
 // fallback + empty check). Connector labels stay plain (label = the text).
 //
 // Editing ends — and commits — on a real blur or Escape. Right-palette text
 // buttons use mousedown.prevent, so they don't steal focus and the editor keeps
 // its selection while you format.
-import { computed, nextTick, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import { useEditor, EditorContent } from "@tiptap/vue-3";
 import { useDiagramStore } from "@/stores/useDiagramStore.js";
 import { useEditorUi } from "@/stores/useEditorUi.js";
@@ -34,6 +34,7 @@ import { sanitizeRichText } from "@/utils/sanitizeHtml.js";
 import { mindmapNodeSize } from "@/diagram/mindmapNodeSize.js";
 import { flowchartNodeSize } from "@/diagram/flowchartNodeSize.js";
 import { richTextLines, richTextLayoutText } from "@/diagram/richTextLists.js";
+import { hasOpenTextFormattingSurface } from "@/composables/useTextFormatting.js";
 
 const store = useDiagramStore();
 const editorUi = useEditorUi();
@@ -114,7 +115,14 @@ const editor = useEditor({
 	extensions: RICH_EXTENSIONS,
 	content: "<p></p>",
 	onUpdate: () => autoGrow(),
-	onBlur: () => commit(),
+	onBlur: ({ event }) => {
+		if (
+			isTextFormattingFocus(event?.relatedTarget) ||
+			hasOpenTextFormattingSurface(editing.session.id)
+		)
+			return;
+		commit();
+	},
 });
 
 // Seed the editor and focus when a session starts (target changed).
@@ -133,8 +141,14 @@ watch(
 		if (shape.value && !shape.value.text?.content && editing.session.seedIfEmpty) {
 			html = contentToHtml(editing.session.seedIfEmpty);
 		}
+		editor.value.storage.paragraphDirection.defaultDirection =
+			shape.value?.text?.direction || "auto";
 		editor.value.commands.setContent(html, false);
-		setActiveEditor(editor.value);
+		setActiveEditor(editor.value, {
+			store,
+			shapeId: shape.value?.id || null,
+			sessionId: editing.session.id,
+		});
 		await nextTick();
 		editor.value.commands.focus("end");
 		if (editing.session.selectAll) selectEditingContent();
@@ -143,6 +157,21 @@ watch(
 			return;
 		}
 		autoGrow();
+	}
+);
+
+watch(
+	() => shape.value?.text?.style?.font,
+	async (font) => {
+		if (!font || !shape.value || !editing.isEditing.value || !document.fonts?.load) return;
+		const shapeId = shape.value.id;
+		const fontSize = shape.value.text?.style?.size || 16;
+		try {
+			await document.fonts.load(`${fontSize}px ${font}`);
+		} catch {
+			// Use the CSS fallback if the selected font cannot load.
+		}
+		if (shape.value?.id === shapeId && shape.value.text?.style?.font === font) autoGrow();
 	}
 );
 
@@ -253,6 +282,18 @@ function commit() {
 	endEditing();
 }
 
+function isTextFormattingFocus(target) {
+	return target instanceof Element && Boolean(target.closest("[data-text-formatting-surface]"));
+}
+
+function handleFormattingFocusChange(event) {
+	if (!editing.isEditing.value || !hasOpenTextFormattingSurface(editing.session.id)) return;
+	const target = event.target;
+	if (isTextFormattingFocus(target)) return;
+	if (target instanceof Element && target.closest('[contenteditable="true"]')) return;
+	commit();
+}
+
 function endEditing() {
 	clearActiveEditor(editor.value);
 	editing.session.shapeId = null;
@@ -261,6 +302,19 @@ function endEditing() {
 	editing.session.seedIfEmpty = null;
 	editing.session.pendingListType = null;
 }
+
+onBeforeUnmount(() => {
+	if (editing.isEditing.value) commit();
+	clearActiveEditor(editor.value);
+});
+onMounted(() => {
+	document.addEventListener("pointerdown", handleFormattingFocusChange, true);
+	document.addEventListener("focusin", handleFormattingFocusChange, true);
+});
+onBeforeUnmount(() => {
+	document.removeEventListener("pointerdown", handleFormattingFocusChange, true);
+	document.removeEventListener("focusin", handleFormattingFocusChange, true);
+});
 
 function commitShape() {
 	const text = (editor.value?.getText() || "").trim();
@@ -352,9 +406,12 @@ function onKeydown(event) {
 .fd-richtext ul,
 .fd-richtext ol {
 	margin: 0;
-	padding-left: 1.4em;
+	padding-inline: 1.4em;
 	list-style-position: outside;
-	text-align: left;
+}
+.fd-richtext li {
+	/* Symmetric gutters keep mixed-direction siblings clear of either marker side. */
+	margin-inline: 1.4em;
 }
 .fd-richtext ul {
 	list-style-type: disc;
@@ -362,10 +419,20 @@ function onKeydown(event) {
 .fd-richtext ol {
 	list-style-type: decimal;
 }
-.fd-richtext li {
-	margin: 0;
-}
 .fd-richtext li p {
 	margin: 0;
+}
+/* Keep a centered list marker with the paragraph instead of at the list gutter. */
+.fd-richtext li:has(> p[style*="text-align: center"]),
+.fd-richtext[style*="text-align: center"]
+	li:not(:has(> p[style*="text-align: left"])):not(:has(> p[style*="text-align: right"])) {
+	list-style-position: inside;
+	text-align: center;
+}
+.fd-richtext li:has(> p[style*="text-align: center"]) > p:first-child,
+.fd-richtext[style*="text-align: center"]
+	li:not(:has(> p[style*="text-align: left"])):not(:has(> p[style*="text-align: right"]))
+	> p:first-child {
+	display: inline;
 }
 </style>

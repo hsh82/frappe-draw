@@ -22,6 +22,7 @@ const HANDWRITTEN_FONT =
 	"'Bradley Hand', 'Chalkboard SE', 'Comic Sans MS', 'Segoe Print', cursive";
 const LINE_HEIGHT = 1.3;
 const LIST_TYPES = new Set(["bulletList", "orderedList"]);
+let editingSessionId = 0;
 
 let singleton = null;
 
@@ -41,6 +42,7 @@ function createTextEditing(store, editorUi) {
 		selectAll: false,
 		seedIfEmpty: null,
 		pendingListType: null,
+		id: 0,
 	});
 	const api = { session, store, editorUi };
 	attachEditingState(api, session);
@@ -61,6 +63,7 @@ function attachShapeEditing(api, session, store) {
 	// freshly dropped node); opts.selectAll selects the seeded/existing text so the
 	// first keystroke replaces it — the drop-to-type flow (#263).
 	api.beginTextEdit = (shapeId, opts = {}) => {
+		session.id = ++editingSessionId;
 		session.connectorId = null;
 		session.shapeId = shapeId;
 		session.selectAll = !!opts.selectAll;
@@ -77,6 +80,7 @@ function attachShapeEditing(api, session, store) {
 
 function attachConnectorEditing(api, session, store) {
 	api.beginConnectorLabelEdit = (connectorId) => {
+		session.id = ++editingSessionId;
 		session.shapeId = null;
 		session.connectorId = connectorId;
 		session.selectAll = false;

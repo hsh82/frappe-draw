@@ -58,6 +58,7 @@ import {
 import { safeImageSrc } from "@/utils/safeUrl.js";
 import { richTextLines } from "@/diagram/richTextLists.js";
 import { wrapLines } from "@/diagram/textMetrics.js";
+import vazirmatnFontData from "@/assets/fonts/Vazirmatn-Variable.woff2?inline";
 
 const THROTTLE_MS = 30000;
 
@@ -177,22 +178,98 @@ function flowchartGlyphBody(s, fill, stroke) {
 
 function shapeText(s) {
 	if (!s.text?.content) return "";
-	const lines = richTextLines(s.text.html, s.text.content);
+	const lines = richTextLines(s.text.html, s.text.content, {
+		defaultDirection: s.text.direction || "auto",
+	});
+	if (lines.some((line) => line.dir)) return shapeDirectedText(s, lines);
 	if (lines.some((line) => line.listType)) return shapeListText(s, lines);
 	const st = s.text.style || {};
+	const fontFamily = escapeAttr(st.font || "Inter, sans-serif");
 	const { x, y, w, h } = box(s);
 	const cx = x + w / 2;
 	const cy = y + h / 2;
 	return (
 		`<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central"` +
 		` fill="${safeColor(st.color, "#171717")}" font-size="${num(st.size || 16, 16)}"` +
-		` font-weight="${st.bold ? 700 : 500}" font-family="Inter, sans-serif">` +
+		` font-weight="${st.bold ? 700 : 500}" font-family="${fontFamily}">` +
 		`${escapeText(s.text.content)}</text>`
 	);
 }
 
+function shapeDirectedText(shape, lines) {
+	const style = shape.text.style || {};
+	const fontFamily = escapeAttr(style.font || "Inter, sans-serif");
+	const size = num(style.size || 16, 16);
+	const { x, y, w, h } = box(shape);
+	const visualLines = wrapListLines(lines, x, w, size);
+	const rowHeight = size * 1.3;
+	const startY = y + h / 2 - ((visualLines.length - 1) * rowHeight) / 2;
+	return visualLines
+		.map((line, index) => {
+			const direction = line.dir || "ltr";
+			const inset = 8 + line.depth * size * 1.4;
+			const isList = Boolean(line.listType);
+			const align =
+				line.align ||
+				shape.text.align ||
+				(isList ? (direction === "rtl" ? "right" : "left") : "center");
+			const anchor =
+				align === "center"
+					? "middle"
+					: align === "right"
+					? direction === "rtl"
+						? "start"
+						: "end"
+					: direction === "rtl"
+					? "end"
+					: "start";
+			const markerOffset = isList && !line.align ? line.markerWidth : 0;
+			const position =
+				align === "center"
+					? x + w / 2
+					: align === "right"
+					? x + w - inset - (direction === "rtl" ? markerOffset : 0)
+					: x + inset + (direction === "ltr" ? markerOffset : 0);
+			if (align === "center" && line.marker) {
+				return (
+					`<text x="${x + w / 2}" y="${startY + index * rowHeight}"` +
+					` direction="${direction}" unicode-bidi="embed" text-anchor="middle"` +
+					` dominant-baseline="central" fill="${safeColor(style.color, "#171717")}"` +
+					` font-size="${size}" font-weight="${style.bold ? 700 : 500}"` +
+					` font-family="${fontFamily}">${escapeText(line.marker)}${escapeText(
+						line.contentText
+					)}</text>`
+				);
+			}
+			const marker = line.marker
+				? `<text x="${direction === "rtl" ? x + w - inset : x + inset}" y="${
+						startY + index * rowHeight
+				  }" direction="${direction}" unicode-bidi="isolate" text-anchor="${
+						direction === "rtl" ? "end" : "start"
+				  }" dominant-baseline="central" fill="${safeColor(
+						style.color,
+						"#171717"
+				  )}" font-size="${size}" font-family="${fontFamily}">${escapeText(
+						line.marker
+				  )}</text>`
+				: "";
+			return (
+				marker +
+				(`<text x="${position}" y="${
+					startY + index * rowHeight
+				}" direction="${direction}"` +
+					` unicode-bidi="embed" text-anchor="${anchor}" dominant-baseline="central"` +
+					` fill="${safeColor(style.color, "#171717")}" font-size="${size}"` +
+					` font-weight="${style.bold ? 700 : 500}" font-family="${fontFamily}">` +
+					`${escapeText(line.contentText)}</text>`)
+			);
+		})
+		.join("");
+}
+
 function shapeListText(shape, lines) {
 	const style = shape.text.style || {};
+	const fontFamily = escapeAttr(style.font || "Inter, sans-serif");
 	const size = num(style.size || 16, 16);
 	const rowHeight = size * 1.35;
 	const { x, y, w, h } = box(shape);
@@ -209,7 +286,7 @@ function shapeListText(shape, lines) {
 	return (
 		`<text dominant-baseline="central" text-anchor="start"` +
 		` fill="${safeColor(style.color, "#171717")}" font-size="${size}"` +
-		` font-weight="${style.bold ? 700 : 500}" font-family="Inter, sans-serif">` +
+		` font-weight="${style.bold ? 700 : 500}" font-family="${fontFamily}">` +
 		`${tspans}</text>`
 	);
 }
@@ -218,14 +295,22 @@ function wrapListLines(lines, originX, width, size) {
 	return lines.flatMap((line) => {
 		const depth = Math.max(0, num(line.depth));
 		const marker = listMarker(line);
-		const x = originX + depth * size * 1.4 + 8;
+		const direction = line.dir || "ltr";
+		const inset = depth * size * 1.4 + 8;
 		const characterWidth = size * 0.61;
 		const markerWidth = marker.length * characterWidth;
-		const availableWidth = Math.max(size * 0.55, width - x - markerWidth - 8);
+		const availableWidth = Math.max(size * 0.55, width - inset - markerWidth - 8);
 		const characters = Math.max(1, Math.floor(availableWidth / characterWidth));
 		return wrapLines(line.text, characters).map((text, index) => ({
-			x: x + (index ? markerWidth : 0),
+			x: originX + inset + (index ? markerWidth : 0),
 			text: `${index ? "" : marker}${text}`,
+			contentText: text,
+			marker: index ? "" : marker,
+			markerWidth,
+			dir: line.dir,
+			depth,
+			listType: line.listType,
+			align: line.align,
 		}));
 	});
 }
@@ -523,11 +608,21 @@ export function documentToSvg(rawDocument, options = {}) {
 	const viewBox = options.viewBox || rendered.viewBox;
 	// Sections render behind everything, in every type.
 	const body = sectionsSvg(doc) + rendered.body;
+	const fontDefinition = usesVazirmatn(doc)
+		? `<style>@font-face{font-family:'Vazirmatn';src:url('${vazirmatnFontData}') format('woff2');font-style:normal;font-weight:100 900}</style>`
+		: "";
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBoxAttr(viewBox)}"` +
 		` preserveAspectRatio="${options.fit || "xMidYMid meet"}" style="${styleAttr}">` +
-		`${body}</svg>`
+		`${fontDefinition}${body}</svg>`
 	);
+}
+
+function usesVazirmatn(document) {
+	return (document.shapes || []).some((shape) => {
+		const font = shape.text?.style?.font;
+		return typeof font === "string" && font.toLowerCase().includes("vazirmatn");
+	});
 }
 
 // --- inlined images (#518) ---------------------------------------------------
