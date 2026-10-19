@@ -88,3 +88,39 @@ describe("editing text shows a text-only menu, not the shape menu (#259)", () =>
 		expect(textGroup).toContain("if (editing.value) richCommands.setColor(hex)");
 	});
 });
+
+describe("committed plain node labels resolve shape direction", () => {
+	const shapeView = read("components/canvas/ShapeView.vue");
+	const editor = read("components/canvas/TextEditor.vue");
+	const richLists = read("diagram/richTextLists.js");
+
+	it("sets the same resolved direction on the plain node label wrapper", () => {
+		expect(shapeView).toContain(
+			'<div class="fd-richtext" :dir="plainDirection" :style="{ ...richStyle, color: labelFill }">'
+		);
+	});
+
+	it("keeps list sizing gutters consistent without the old extra item margins", () => {
+		expect(editor).toContain("padding-inline: 1.4em;");
+		expect(editor).toContain("margin-inline: 0;");
+		expect(editor).not.toContain("margin-inline: 1.4em;");
+		expect(richLists).toContain("richTextLayoutWidth");
+		expect(richLists).toContain("textWidth(layoutLine(line), style)");
+	});
+});
+
+describe("formatting focus commits only when focus leaves the editor surfaces", () => {
+	const editor = read("components/canvas/TextEditor.vue");
+	const formatting = read("composables/useTextFormatting.js");
+
+	it("uses the same focus boundary for pointer and keyboard transitions", () => {
+		const handler = editor.slice(
+			editor.indexOf("function handleFormattingFocusChange"),
+			editor.indexOf("function endEditing")
+		);
+		expect(handler).toContain("isTextEditingSurfaceTarget(target)");
+		expect(handler).toContain("commit();");
+		expect(handler).not.toContain("hasOpenTextFormattingSurface");
+		expect(formatting).toContain('[data-text-formatting-surface], [contenteditable="true"]');
+	});
+});

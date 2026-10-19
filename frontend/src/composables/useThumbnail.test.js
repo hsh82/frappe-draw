@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest";
 
 // frappe-ui's source only resolves through its vite plugin; documentToSvg itself is
 // pure, so stub the module boundary.
@@ -11,6 +11,16 @@ const { documentToSvg, inlinedImages, isDocumentEmpty, safeColor } = await impor
 const { ROUNDED_CORNER_RADIUS, SHARP_CORNER_RADIUS } = await import("@/diagram/shapeGeometry.js");
 const { HIGHLIGHTER_OPACITY } = await import("@/diagram/whiteboardColors.js");
 const { presetPolygonPoints } = await import("@/diagram/polygon.js");
+
+const originalCanvasGetContext = HTMLCanvasElement.prototype.getContext;
+beforeAll(() => {
+	HTMLCanvasElement.prototype.getContext = function () {
+		return { font: "", measureText: (text) => ({ width: String(text).length * 8 }) };
+	};
+});
+afterAll(() => {
+	HTMLCanvasElement.prototype.getContext = originalCanvasGetContext;
+});
 
 function svgTextContent(svg) {
 	return new DOMParser().parseFromString(svg, "image/svg+xml").documentElement.textContent;
@@ -215,11 +225,38 @@ describe("documentToSvg for a unified document", () => {
 		const textNodes = [
 			...new DOMParser().parseFromString(svg, "image/svg+xml").querySelectorAll("text"),
 		];
-		const listText = textNodes.filter((node) => /^x+$/.test(node.textContent));
+		const listText = textNodes
+			.filter((node) => node.textContent.includes("x"))
+			.map((node) => {
+				const tspans = node.querySelectorAll("tspan");
+				return tspans.length ? tspans[tspans.length - 1].textContent : node.textContent;
+			});
 
 		expect(listText.length).toBeGreaterThan(1);
-		expect(listText.map((node) => node.textContent).join("")).toBe(text);
-		expect(textNodes.filter((node) => node.textContent === "• ")).toHaveLength(1);
+		expect(listText.join("")).toBe(text);
+		expect(
+			textNodes
+				.flatMap((node) => [...node.querySelectorAll("tspan")])
+				.filter((node) => node.textContent === "• ")
+		).toHaveLength(1);
+	});
+
+	it("does not wrap fit-width text merely because it has automatic direction", () => {
+		const doc = unifiedDocument();
+		const text = "iiiiiiiiiiiiiiiiiiiiiiiiii";
+		doc.shapes[0].text = {
+			content: text,
+			html: `<p dir="ltr">${text}</p>`,
+			fitWidth: true,
+			style: { size: 16, font: "Arial, sans-serif" },
+		};
+
+		const svg = documentToSvg(doc);
+		const lines = [
+			...new DOMParser().parseFromString(svg, "image/svg+xml").querySelectorAll("text"),
+		].filter((node) => node.textContent === text);
+
+		expect(lines).toHaveLength(1);
 	});
 
 	it("exports paragraph and list direction without reversing stored text", () => {
@@ -240,6 +277,22 @@ describe("documentToSvg for a unified document", () => {
 		expect(exportedText).toContain("فارسی Frappe 3");
 		expect(exportedText).toContain("1. مرحبا (2026)");
 		expect(exportedText).toContain("English متن فارسی");
+	});
+
+	it("exports each paragraph in a mixed-direction list item with its own direction", () => {
+		const doc = unifiedDocument();
+		doc.shapes[0].text = {
+			content: "مرحبا\nHello",
+			html: '<ul><li><p dir="rtl">مرحبا</p><p dir="ltr">Hello</p></li></ul>',
+			style: {},
+		};
+		const text = [
+			...new DOMParser()
+				.parseFromString(documentToSvg(doc), "image/svg+xml")
+				.querySelectorAll("text"),
+		].filter((node) => node.textContent === "• مرحبا" || node.textContent === "Hello");
+
+		expect(text.map((node) => node.getAttribute("direction"))).toEqual(["rtl", "ltr"]);
 	});
 
 	it.each(["ltr", "rtl"])("centers %s list markers with their text", (direction) => {
@@ -268,7 +321,29 @@ describe("documentToSvg for a unified document", () => {
 			style: {},
 		};
 		const svg = documentToSvg(doc);
-		expect(svg).toMatch(/<text x="108"[^>]*direction="rtl"[^>]*text-anchor="end"/);
+		expect(svg).toMatch(/<text x="120"[^>]*direction="rtl"[^>]*text-anchor="end"/);
+	});
+
+	it.each(["ltr", "rtl"])("keeps %s list markers with explicitly aligned text", (direction) => {
+		for (const align of ["left", "center", "right"]) {
+			const doc = unifiedDocument();
+			doc.shapes[0].text = {
+				content: "Centered task",
+				html: `<ul><li><p dir="${direction}" style="text-align: ${align}">Centered task</p></li></ul>`,
+				style: { size: 16 },
+			};
+			const svg = documentToSvg(doc);
+			const listLine = [
+				...new DOMParser().parseFromString(svg, "image/svg+xml").querySelectorAll("text"),
+			].find((node) => node.textContent === "• Centered task");
+
+			expect(listLine).toBeTruthy();
+			expect(listLine.querySelectorAll("tspan")).toHaveLength(2);
+			expect(listLine.getAttribute("direction")).toBe(direction);
+			expect(listLine.getAttribute("x")).toBe(
+				align === "left" ? "120" : align === "right" ? "280" : "200"
+			);
+		}
 	});
 
 	it("includes whiteboard ink and sticky notes", () => {

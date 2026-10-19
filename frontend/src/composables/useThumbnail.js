@@ -57,7 +57,8 @@ import {
 } from "@/diagram/whiteboardColors.js";
 import { safeImageSrc } from "@/utils/safeUrl.js";
 import { richTextLines } from "@/diagram/richTextLists.js";
-import { wrapLines } from "@/diagram/textMetrics.js";
+import { textWidth, wrapTextToWidth } from "@/diagram/textMetrics.js";
+import { shapeTextArea } from "@/composables/useTextEditing.js";
 import vazirmatnFontData from "@/assets/fonts/Vazirmatn-Variable.woff2?inline";
 
 const THROTTLE_MS = 30000;
@@ -78,6 +79,10 @@ function diamondPoints(s) {
 // attribute intact. box() normalises all four before anything derives from them.
 function box(s) {
 	return { x: num(s.x), y: num(s.y), w: num(s.w), h: num(s.h) };
+}
+
+function textArea(s) {
+	return shapeTextArea({ ...s, ...box(s) });
 }
 
 function shapeBody(s) {
@@ -200,8 +205,8 @@ function shapeDirectedText(shape, lines) {
 	const style = shape.text.style || {};
 	const fontFamily = escapeAttr(style.font || "Inter, sans-serif");
 	const size = num(style.size || 16, 16);
-	const { x, y, w, h } = box(shape);
-	const visualLines = wrapListLines(lines, x, w, size);
+	const { x, y, w, h } = textArea(shape);
+	const visualLines = wrapListLines(lines, x, w, size, style, !shape.text.fitWidth);
 	const rowHeight = size * 1.3;
 	const startY = y + h / 2 - ((visualLines.length - 1) * rowHeight) / 2;
 	return visualLines
@@ -223,45 +228,33 @@ function shapeDirectedText(shape, lines) {
 					: direction === "rtl"
 					? "end"
 					: "start";
-			const markerOffset = isList && !line.align ? line.markerWidth : 0;
 			const position =
-				align === "center"
-					? x + w / 2
-					: align === "right"
-					? x + w - inset - (direction === "rtl" ? markerOffset : 0)
-					: x + inset + (direction === "ltr" ? markerOffset : 0);
-			if (align === "center" && line.marker) {
-				return (
-					`<text x="${x + w / 2}" y="${startY + index * rowHeight}"` +
-					` direction="${direction}" unicode-bidi="embed" text-anchor="middle"` +
-					` dominant-baseline="central" fill="${safeColor(style.color, "#171717")}"` +
-					` font-size="${size}" font-weight="${style.bold ? 700 : 500}"` +
-					` font-family="${fontFamily}">${escapeText(line.marker)}${escapeText(
-						line.contentText
-					)}</text>`
-				);
-			}
-			const marker = line.marker
-				? `<text x="${direction === "rtl" ? x + w - inset : x + inset}" y="${
-						startY + index * rowHeight
-				  }" direction="${direction}" unicode-bidi="isolate" text-anchor="${
-						direction === "rtl" ? "end" : "start"
-				  }" dominant-baseline="central" fill="${safeColor(
-						style.color,
-						"#171717"
-				  )}" font-size="${size}" font-family="${fontFamily}">${escapeText(
+				align === "center" ? x + w / 2 : align === "right" ? x + w - inset : x + inset;
+			const continuationOffset =
+				isList && !line.marker && !line.align && !shape.text.align
+					? direction === "rtl"
+						? -line.markerWidth
+						: line.markerWidth
+					: 0;
+			// Keep marker and text in one bidi paragraph. Separate absolutely
+			// positioned marker text overlapped content whenever an explicit physical
+			// alignment suppressed the old marker offset.
+			const content = line.marker
+				? `<tspan direction="ltr" unicode-bidi="isolate">${escapeText(
 						line.marker
-				  )}</text>`
-				: "";
+				  )}</tspan><tspan direction="${direction}" unicode-bidi="isolate">${escapeText(
+						line.contentText
+				  )}</tspan>`
+				: escapeText(line.contentText);
 			return (
-				marker +
-				(`<text x="${position}" y="${
+				`<text x="${position + continuationOffset}" y="${
 					startY + index * rowHeight
 				}" direction="${direction}"` +
-					` unicode-bidi="embed" text-anchor="${anchor}" dominant-baseline="central"` +
-					` fill="${safeColor(style.color, "#171717")}" font-size="${size}"` +
-					` font-weight="${style.bold ? 700 : 500}" font-family="${fontFamily}">` +
-					`${escapeText(line.contentText)}</text>`)
+				` unicode-bidi="embed" text-anchor="${anchor}" dominant-baseline="central" xml:space="preserve"` +
+				` fill="${safeColor(style.color, "#171717")}" font-size="${size}"` +
+				` font-weight="${
+					style.bold ? 700 : 500
+				}" font-family="${fontFamily}">${content}</text>`
 			);
 		})
 		.join("");
@@ -272,8 +265,8 @@ function shapeListText(shape, lines) {
 	const fontFamily = escapeAttr(style.font || "Inter, sans-serif");
 	const size = num(style.size || 16, 16);
 	const rowHeight = size * 1.35;
-	const { x, y, w, h } = box(shape);
-	const visualLines = wrapListLines(lines, x, w, size);
+	const { x, y, w, h } = textArea(shape);
+	const visualLines = wrapListLines(lines, x, w, size, style, !shape.text.fitWidth);
 	const startY = y + h / 2 - ((visualLines.length - 1) * rowHeight) / 2;
 	const tspans = visualLines
 		.map(
@@ -291,17 +284,23 @@ function shapeListText(shape, lines) {
 	);
 }
 
-function wrapListLines(lines, originX, width, size) {
+function wrapListLines(lines, originX, width, size, style = {}, allowWrap = true) {
 	return lines.flatMap((line) => {
 		const depth = Math.max(0, num(line.depth));
 		const marker = listMarker(line);
-		const direction = line.dir || "ltr";
 		const inset = depth * size * 1.4 + 8;
-		const characterWidth = size * 0.61;
-		const markerWidth = marker.length * characterWidth;
-		const availableWidth = Math.max(size * 0.55, width - inset - markerWidth - 8);
-		const characters = Math.max(1, Math.floor(availableWidth / characterWidth));
-		return wrapLines(line.text, characters).map((text, index) => ({
+		const markerForWidth = marker || line.continuationMarker || "";
+		const markerWidth =
+			textWidth(markerForWidth, style) || markerForWidth.length * size * 0.61;
+		const listGutter = line.listType ? size * 1.4 * 2 * (depth + 1) : 0;
+		// HTML lists reserve both logical gutters at every nested level. The marker
+		// occupies the start gutter, so do not subtract its width a second time.
+		const reservedWidth = line.listType ? listGutter : inset * 2;
+		const availableWidth = Math.max(size * 0.55, width - reservedWidth);
+		const wrapped = allowWrap
+			? wrapTextToWidth(line.text, availableWidth, style)
+			: String(line.text || "").split(/\r?\n/);
+		return wrapped.map((text, index) => ({
 			x: originX + inset + (index ? markerWidth : 0),
 			text: `${index ? "" : marker}${text}`,
 			contentText: text,
@@ -316,6 +315,7 @@ function wrapListLines(lines, originX, width, size) {
 }
 
 function listMarker(line) {
+	if (line.continuation) return "";
 	if (line.listType === "bullet") return "• ";
 	if (line.listType === "ordered") return `${line.number}. `;
 	return "";

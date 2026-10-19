@@ -37,10 +37,12 @@ test("shared editor lists persist, copy with a shape, reopen, and export safely"
 		name: "Bulleted list",
 		exact: true,
 	});
-	await numberedButton.click();
+	await bulletButton.click();
 	await expect(editor.locator("ul li")).toHaveCount(2);
 	await expect(editor).toBeFocused();
-	await bulletButton.click();
+	await expect(bulletButton).toHaveAttribute("aria-pressed", "true");
+	await expect(numberedButton).toHaveAttribute("aria-pressed", "false");
+	await numberedButton.click();
 	await expect(editor.locator("ol li")).toHaveCount(2);
 	await expect(editor).toBeFocused();
 	await expect(numberedButton).toHaveAttribute("aria-pressed", "true");

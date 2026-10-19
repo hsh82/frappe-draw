@@ -1,5 +1,6 @@
 import { sanitizeRichText } from "@/utils/sanitizeHtml.js";
 import { resolveDirection, validDirectionMode } from "./textDirection.js";
+import { textWidth } from "./textMetrics.js";
 
 const BLOCK_TAGS = new Set(["P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE"]);
 const LIST_TAG = /<\s*(?:ul|ol)\b/i;
@@ -19,6 +20,14 @@ export function richTextLines(html, fallbackText = "", { defaultDirection } = {}
 
 export function richTextLayoutText(lines) {
 	return lines.map(layoutLine).join("\n");
+}
+
+export function richTextLayoutWidth(lines, style = {}) {
+	const size = Number(style.size) || 16;
+	return lines.reduce((widest, line) => {
+		const listEndGutter = line.listType ? ((line.depth || 0) + 1) * size * 1.4 : 0;
+		return Math.max(widest, textWidth(layoutLine(line), style) + listEndGutter);
+	}, 0);
 }
 
 // A whole-shape direction choice clears block and list direction overrides.
@@ -46,14 +55,29 @@ export function renderRichTextWithDefaultDirection(html, defaultDirection) {
 			direction: effectiveListItemDirection(item, paragraph, defaultMode).direction,
 		};
 	});
+	// Resolve each paragraph against the source markup before writing derived dir
+	// attributes onto list items. Otherwise a list item's marker direction can
+	// accidentally become an inherited override for every paragraph it contains.
+	const blocks = [...document.body.querySelectorAll("p,h1,h2,h3,h4,h5,h6,pre")].map((block) => ({
+		block,
+		direction: effectiveBlockDirection(block, defaultMode),
+	}));
 	for (const { item, direction } of listItems) {
 		item.setAttribute("dir", direction);
 	}
-	for (const block of document.body.querySelectorAll("p,h1,h2,h3,h4,h5,h6,pre")) {
-		if (block.hasAttribute("dir") || block.closest("[dir]")) continue;
-		if (defaultMode) block.setAttribute("dir", defaultMode);
+	for (const { block, direction } of blocks) {
+		block.setAttribute("dir", direction);
 	}
 	return document.body.innerHTML;
+}
+
+function effectiveBlockDirection(block, defaultDirection) {
+	const mode =
+		validDirectionMode(block.getAttribute("dir")) ||
+		directionModeFromAncestors(block) ||
+		validDirectionMode(defaultDirection) ||
+		"auto";
+	return resolveDirection(mode, block.textContent || "");
 }
 
 function effectiveListItemDirection(item, paragraph, defaultDirection) {
@@ -120,25 +144,56 @@ function readList(list, lines, depth, defaultDirection) {
 	let number = safeStart(list.getAttribute("start"));
 	for (const item of list.children) {
 		if (item.tagName !== "LI") continue;
-		const text = textWithoutLists(item).trim();
-		const paragraph = item.querySelector(":scope > p");
-		const { mode, direction } = effectiveListItemDirection(item, paragraph, defaultDirection);
-		const align = alignmentOf(paragraph);
-		lines.push({
-			text,
-			listType: ordered ? "ordered" : "bullet",
-			depth,
-			number: ordered ? number : null,
-			...(mode ? { mode, dir: direction } : {}),
-			...(align ? { align } : {}),
-		});
-		if (ordered) number += 1;
-		for (const nested of item.children) {
-			if (nested.tagName === "UL" || nested.tagName === "OL") {
-				readList(nested, lines, depth + 1, defaultDirection);
+		const marker = listMarkerForType(ordered, number);
+		let emittedParagraph = false;
+		let inlineText = "";
+		const emitParagraph = (text, element = null) => {
+			const value = String(text || "").trim();
+			if (!value) return;
+			const mode = paragraphMode(element, item, defaultDirection);
+			const direction = resolveDirection(mode || "auto", value);
+			const align = alignmentOf(element);
+			lines.push({
+				text: value,
+				listType: ordered ? "ordered" : "bullet",
+				depth,
+				number: ordered ? number : null,
+				...(emittedParagraph ? { continuation: true, continuationMarker: marker } : {}),
+				...(mode ? { mode, dir: direction } : {}),
+				...(align ? { align } : {}),
+			});
+			emittedParagraph = true;
+		};
+		const flushInline = () => {
+			emitParagraph(inlineText);
+			inlineText = "";
+		};
+		for (const child of item.childNodes) {
+			if (child.nodeType === 1 && (child.tagName === "UL" || child.tagName === "OL")) {
+				flushInline();
+				readList(child, lines, depth + 1, defaultDirection);
+			} else if (child.nodeType === 1 && BLOCK_TAGS.has(child.tagName)) {
+				flushInline();
+				emitParagraph(textWithoutLists(child), child);
+			} else if (child.nodeType === 3) {
+				inlineText += child.nodeValue;
+			} else if (child.nodeType === 1) {
+				inlineText += child.tagName === "BR" ? "\n" : child.textContent;
 			}
 		}
+		flushInline();
+		if (ordered) number += 1;
 	}
+}
+
+function paragraphMode(block, item, defaultDirection) {
+	return (
+		validDirectionMode(block?.getAttribute("dir")) ||
+		validDirectionMode(item.getAttribute("dir")) ||
+		directionModeFromAncestors(item) ||
+		validDirectionMode(defaultDirection) ||
+		"auto"
+	);
 }
 
 function textWithoutLists(node) {
@@ -191,8 +246,9 @@ function safeStart(value) {
 function layoutLine(line) {
 	// Non-whitespace keeps the heuristic node wrappers from dropping nested indent.
 	const indent = "·····".repeat(line.depth || 0);
-	const marker =
-		line.listType === "bullet" ? "• " : line.listType === "ordered" ? `${line.number}. ` : "";
+	const marker = line.continuation
+		? ""
+		: listMarkerForType(line.listType === "ordered", line.number);
 	return `${indent}${marker}${line.text}`;
 }
 
@@ -200,8 +256,13 @@ function markdownLine(line) {
 	const depth = Math.max(0, line.depth || 0);
 	const indent = "  ".repeat(depth);
 	const text = escapeMarkdown(line.text);
+	if (line.continuation) return `${indent}${text}`;
 	if (line.listType === "ordered") return `${indent}${line.number}. ${text}`;
 	return `${indent}- ${text}`;
+}
+
+function listMarkerForType(ordered, number) {
+	return ordered ? `${number}. ` : "• ";
 }
 
 function escapeMarkdown(text) {

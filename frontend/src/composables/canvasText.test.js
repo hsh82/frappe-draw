@@ -57,7 +57,7 @@ describe("measuring the width of an unwrapped element", () => {
 	it("measures the string against the font, not the constrained field", () => {
 		const editor = read("../components/canvas/TextEditor.vue");
 		expect(editor).toContain('whiteSpace: "pre"');
-		expect(editor).toContain("textWidth(text, style)");
+		expect(editor).toContain("richTextLayoutWidth(lines, style)");
 		expect(editor).toContain("fitsWidthToText(shape.value)");
 	});
 

@@ -1,8 +1,29 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
-import { markdownListLines, richTextLayoutText, richTextLines } from "./richTextLists.js";
-import { mindmapNodeSize } from "./mindmapNodeSize.js";
-import { flowchartNodeSize } from "./flowchartNodeSize.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+	markdownListLines,
+	renderRichTextWithDefaultDirection,
+	richTextLayoutWidth,
+	richTextLayoutText,
+	richTextLines,
+} from "./richTextLists.js";
+import { mindmapNodeSize, mindmapSizeForShape } from "./mindmapNodeSize.js";
+import { flowchartNodeSize, flowchartSizeForShape } from "./flowchartNodeSize.js";
+
+const originalCanvasGetContext = HTMLCanvasElement.prototype.getContext;
+const canvasContext = {
+	font: "",
+	measureText(text) {
+		const size = Number(this.font.match(/([\d.]+)px/)?.[1]) || 16;
+		return { width: Array.from(text).length * size * 0.61 };
+	},
+};
+beforeAll(() => {
+	HTMLCanvasElement.prototype.getContext = () => canvasContext;
+});
+afterAll(() => {
+	HTMLCanvasElement.prototype.getContext = originalCanvasGetContext;
+});
 
 describe("richTextLines", () => {
 	it("reads decimal, bullet, and nested list items as text-only rows", () => {
@@ -58,6 +79,78 @@ describe("richTextLines", () => {
 		const listed = flowchartNodeSize({ nodeType: "process", text: measuredText });
 		const plain = flowchartNodeSize({ nodeType: "process", text: plainText });
 		expect(listed.w * listed.h).toBeGreaterThan(plain.w * plain.h);
+	});
+
+	it("resolves paragraphs independently from a list item's marker direction", () => {
+		const html = renderRichTextWithDefaultDirection(
+			'<ul><li><p dir="rtl">مرحبا</p><p dir="ltr">Hello</p></li></ul>',
+			"auto"
+		);
+		const document = new DOMParser().parseFromString(html, "text/html");
+		const item = document.querySelector("li");
+
+		expect(item.getAttribute("dir")).toBe("rtl");
+		expect(item.querySelectorAll("p")[0].getAttribute("dir")).toBe("rtl");
+		expect(item.querySelectorAll("p")[1].getAttribute("dir")).toBe("ltr");
+	});
+
+	it("auto-resolves sibling paragraphs inside one list item independently", () => {
+		const html = renderRichTextWithDefaultDirection(
+			"<ul><li><p>مرحبا</p><p>Hello</p></li></ul>",
+			"auto"
+		);
+		const paragraphs = new DOMParser()
+			.parseFromString(html, "text/html")
+			.querySelectorAll("li > p");
+
+		expect(paragraphs[0].getAttribute("dir")).toBe("rtl");
+		expect(paragraphs[1].getAttribute("dir")).toBe("ltr");
+	});
+
+	it("keeps paragraphs inside one list item as separate direction-aware rows", () => {
+		const lines = richTextLines(
+			'<ul><li><p dir="rtl">مرحبا</p><p dir="ltr">Hello</p></li></ul>'
+		);
+
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toMatchObject({ listType: "bullet", dir: "rtl" });
+		expect(lines[1]).toMatchObject({ continuation: true, dir: "ltr" });
+		expect(richTextLayoutText(lines)).toBe("• مرحبا\nHello");
+	});
+
+	it("includes rich list structure in committed node sizing", () => {
+		const content = "A fairly long label that wraps across the node width";
+		const plain = {
+			text: { content, html: `<p>${content}</p>` },
+			flowchart: { nodeType: "process" },
+		};
+		const listed = {
+			...plain,
+			text: {
+				...plain.text,
+				html: `<ul><li><p>${content}</p><ol><li><p>Nested</p></li></ol></li></ul>`,
+			},
+		};
+
+		expect(mindmapSizeForShape(listed).h).toBeGreaterThan(mindmapSizeForShape(plain).h);
+		const listedFlowchart = flowchartSizeForShape(listed);
+		const plainFlowchart = flowchartSizeForShape(plain);
+		expect(listedFlowchart.w * listedFlowchart.h).toBeGreaterThan(
+			plainFlowchart.w * plainFlowchart.h
+		);
+	});
+
+	it("measures text and nested list gutters with the selected font metrics", () => {
+		const lines = richTextLines("<ul><li>Top<ol><li>Nested</li></ol></li></ul>");
+		const width = richTextLayoutWidth(lines, {
+			size: 10,
+			font: "'Vazirmatn', sans-serif",
+			bold: true,
+		});
+
+		expect(width).toBeGreaterThan("·····1. Nested".length * 10 * 0.61);
+		expect(canvasContext.font).toContain("'Vazirmatn', sans-serif");
+		expect(canvasContext.font).toContain("700");
 	});
 });
 
